@@ -11,6 +11,71 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
+func makeLegacyPayload() []byte {
+	tx := types.NewTx(&types.LegacyTx{
+		Nonce:    42,
+		GasPrice: big.NewInt(50_000_000_000),
+		Gas:      21000,
+		To:       &common.Address{0xab, 0xcd, 0xef},
+		Value:    big.NewInt(1_000_000_000_000_000_000),
+		Data:     []byte("test data"),
+		V:        big.NewInt(1),
+		R:        big.NewInt(2),
+		S:        big.NewInt(3),
+	})
+
+	payload, err := rlp.EncodeToBytes(tx)
+	if err != nil {
+		panic(err)
+	}
+	return payload
+}
+
+func makeContractCreatePayload() []byte {
+	tx := types.NewTx(&types.LegacyTx{
+		Nonce:    1,
+		GasPrice: big.NewInt(20_000_000_000),
+		Gas:      100000,
+		To:       nil, // Contract Creation
+		Value:    big.NewInt(0),
+		Data:     []byte{0x60, 0x60, 0x01}, // dummy bytecode
+		V:        big.NewInt(1),
+		R:        big.NewInt(2),
+		S:        big.NewInt(3),
+	})
+	payload, err := rlp.EncodeToBytes(tx)
+	if err != nil {
+		panic(err)
+	}
+	return payload
+}
+
+func makeEIP2930Payload() []byte {
+	tx := types.NewTx(&types.AccessListTx{
+		ChainID:  big.NewInt(1),
+		Nonce:    42,
+		GasPrice: big.NewInt(50_000_000_000),
+		Gas:      21000,
+		To:       &common.Address{0xab, 0xcd, 0xef},
+		Value:    big.NewInt(1_000_000_000_000_000_000),
+		Data:     []byte("test data"),
+		AccessList: types.AccessList{
+			{
+				Address:     common.Address{0xaa},
+				StorageKeys: []common.Hash{{0x01}},
+			},
+		},
+		V: big.NewInt(1),
+		R: big.NewInt(2),
+		S: big.NewInt(3),
+	})
+	payload, err := rlp.EncodeToBytes(tx)
+	if err != nil {
+		panic(err)
+	}
+	return payload
+}
+
 // makeGethEIP1559Payload creates a RLP-encoded EIP-1559 transaction.
 func makeEIP1559Payload() []byte {
 	tx := types.NewTx(&types.DynamicFeeTx{
@@ -37,80 +102,32 @@ func makeEIP1559Payload() []byte {
 	return payload
 }
 
-var eip1559Payload = makeEIP1559Payload()
+func makeEIP1559AccessListPayload() []byte {
+	tx := types.NewTx(&types.DynamicFeeTx{
+		ChainID:   big.NewInt(1),
+		Nonce:     42,
+		GasTipCap: big.NewInt(2_000_000_000),
+		GasFeeCap: big.NewInt(50_000_000_000),
+		Gas:       100000,
+		To:        &common.Address{0xab, 0xcd, 0xef},
+		Value:     big.NewInt(1_000_000_000_000_000_000),
+		Data:      []byte("test data"),
+		AccessList: types.AccessList{
+			{
+				Address:     common.Address{0xaa},
+				StorageKeys: []common.Hash{{0x01}, {0x02}},
+			},
+		},
+		V: big.NewInt(0),
+		R: big.NewInt(1),
+		S: big.NewInt(2),
+	})
 
-func TestTransactionDecodingConsistency(t *testing.T) {
-	payload := makeEIP1559Payload()
-
-	// 1. Decode with go-ethereum's rlp as the source of truth.
-	var gethTx types.Transaction
-	if err := rlp.DecodeBytes(payload, &gethTx); err != nil {
-		t.Fatalf("geth rlp.DecodeBytes failed: %v", err)
-	}
-
-	// 2. Decode with our custom fast-rlp implementation.
-	fastTx, err := DecodeTransaction(payload)
+	payload, err := rlp.EncodeToBytes(tx)
 	if err != nil {
-		t.Fatalf("fastrlp.DecodeTransaction failed: %v", err)
+		panic(err)
 	}
-
-	// 3. Compare the results. They must be identical.
-	compareTransactions(t, &gethTx, fastTx)
-}
-
-// BenchmarkGethDecodeTransaction-8     1365064               856.8 ns/op           512 B/op         19 allocs/op
-func BenchmarkGethDecodeTransaction(b *testing.B) {
-	var decodedTx types.Transaction
-
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		// Decode payload to types.Transaction struct
-		if err := rlp.DecodeBytes(eip1559Payload, &decodedTx); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-// BenchmarkFastRLPDecodeTransaction-8      2587832               463.8 ns/op           936 B/op         24 allocs/op
-func BenchmarkFastRLPDecodeTransaction(b *testing.B) {
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_, err := DecodeTransaction(eip1559Payload)
-		if err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-// BenchmarkParseTransaction-8     27278952                43.91 ns/op            0 B/op          0 allocs/op
-func BenchmarkParseTransaction(b *testing.B) {
-	var tx FastDynamicFeeTx
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if err := ParseTransaction(eip1559Payload, &tx); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-// BenchmarkToTx-8          2973628               388.9 ns/op           936 B/op         24 allocs/op
-func BenchmarkToTx(b *testing.B) {
-	var tx FastDynamicFeeTx
-	if err := ParseTransaction(eip1559Payload, &tx); err != nil {
-		b.Fatal(err)
-	}
-
-	b.ReportAllocs()
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		if _, err := tx.ToTx(); err != nil {
-			b.Fatal(err)
-		}
-	}
+	return payload
 }
 
 // compareTransactions is a helper that provides detailed, field-by-field comparisons
@@ -128,11 +145,16 @@ func compareTransactions(t *testing.T, want, got *types.Transaction) {
 	if want.Nonce() != got.Nonce() {
 		t.Errorf("Nonce mismatch: want %d, got %d", want.Nonce(), got.Nonce())
 	}
-	if want.GasTipCap().Cmp(got.GasTipCap()) != 0 {
-		t.Errorf("GasTipCap mismatch: want %s, got %s", want.GasTipCap(), got.GasTipCap())
+	if want.GasPrice().Cmp(got.GasPrice()) != 0 {
+		t.Errorf("GasPrice mismatch: want %s, got %s", want.GasPrice(), got.GasPrice())
 	}
-	if want.GasFeeCap().Cmp(got.GasFeeCap()) != 0 {
-		t.Errorf("GasFeeCap mismatch: want %s, got %s", want.GasFeeCap(), got.GasFeeCap())
+	if want.Type() == types.DynamicFeeTxType {
+		if want.GasTipCap().Cmp(got.GasTipCap()) != 0 {
+			t.Errorf("GasTipCap mismatch: want %s, got %s", want.GasTipCap(), got.GasTipCap())
+		}
+		if want.GasFeeCap().Cmp(got.GasFeeCap()) != 0 {
+			t.Errorf("GasFeeCap mismatch: want %s, got %s", want.GasFeeCap(), got.GasFeeCap())
+		}
 	}
 	if want.Gas() != got.Gas() {
 		t.Errorf("Gas mismatch: want %d, got %d", want.Gas(), got.Gas())
@@ -156,5 +178,122 @@ func compareTransactions(t *testing.T, want, got *types.Transaction) {
 	vGot, rGot, sGot := got.RawSignatureValues()
 	if vWant.Cmp(vGot) != 0 || rWant.Cmp(rGot) != 0 || sWant.Cmp(sGot) != 0 {
 		t.Errorf("Signature mismatch:\n- V want: %s, got: %s\n- R want: %s, got: %s\n- S want: %s, got: %s", vWant, vGot, rWant, rGot, sWant, sGot)
+	}
+}
+
+var (
+	legacyPayload            = makeLegacyPayload()
+	eip2930Payload           = makeEIP2930Payload()
+	eip1559Payload           = makeEIP1559Payload()
+	eip1559AccessListPayload = makeEIP1559AccessListPayload()
+	contractCreatePayload    = makeContractCreatePayload()
+)
+
+func TestTransactionDecodingConsistency(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload []byte
+	}{
+		{"Legacy", legacyPayload},
+		{"EIP-2930", eip2930Payload},
+		{"EIP-1559", eip1559Payload},
+		{"EIP-1559 with AccessList", eip1559AccessListPayload},
+		{"Contract Creation", contractCreatePayload},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gethTx types.Transaction
+			if err := rlp.DecodeBytes(tt.payload, &gethTx); err != nil {
+				t.Fatalf("geth rlp.DecodeBytes failed: %v", err)
+			}
+
+			fastTx, err := DecodeTransaction(tt.payload)
+			if err != nil {
+				t.Fatalf("fastrlp.DecodeTransaction failed: %v", err)
+			}
+
+			compareTransactions(t, &gethTx, fastTx)
+		})
+	}
+}
+
+// BenchmarkGethDecode/Legacy-8             1683134               598.6 ns/op           360 B/op         14 allocs/op
+// BenchmarkGethDecode/EIP1559-8            1405242               843.0 ns/op           512 B/op         19 allocs/op
+// BenchmarkGethDecode/AccessList-8         1000000              1097.0 ns/op           856 B/op         22 allocs/op
+func BenchmarkGethDecode(b *testing.B) {
+	benchmarks := []struct {
+		name    string
+		payload []byte
+	}{
+		{"Legacy", legacyPayload},
+		{"EIP1559", eip1559Payload},
+		{"AccessList", eip1559AccessListPayload},
+	}
+
+	for _, bm := range benchmarks {
+		b.Run(bm.name, func(b *testing.B) {
+			var decodedTx types.Transaction
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if err := rlp.DecodeBytes(bm.payload, &decodedTx); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkFastRLPParse/Legacy-8          32542416                34.72 ns/op            0 B/op          0 allocs/op
+// BenchmarkFastRLPParse/EIP1559-8         22326325                53.51 ns/op            0 B/op          0 allocs/op
+// BenchmarkFastRLPParse/AccessList-8      21619786                55.30 ns/op            0 B/op          0 allocs/op
+func BenchmarkFastRLPParse(b *testing.B) {
+	benchmarks := []struct {
+		name    string
+		payload []byte
+	}{
+		{"Legacy", legacyPayload},
+		{"EIP1559", eip1559Payload},
+		{"AccessList", eip1559AccessListPayload},
+	}
+
+	var tx Transaction
+	for _, bm := range benchmarks {
+		b.Run(bm.name, func(b *testing.B) {
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if err := ParseTransaction(bm.payload, &tx); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkFastRLPToTx/Legacy-8            3243415               363.2 ns/op           728 B/op         20 allocs/op
+// BenchmarkFastRLPToTx/EIP1559-8           2973186               395.6 ns/op           936 B/op         24 allocs/op
+// BenchmarkFastRLPToTx/AccessList-8        2371609               497.2 ns/op          1128 B/op         28 allocs/op
+func BenchmarkFastRLPToTx(b *testing.B) {
+	benchmarks := []struct {
+		name    string
+		payload []byte
+	}{
+		{"Legacy", legacyPayload},
+		{"EIP1559", eip1559Payload},
+		{"AccessList", eip1559AccessListPayload},
+	}
+	for _, bm := range benchmarks {
+		b.Run(bm.name, func(b *testing.B) {
+			var tx Transaction
+			_ = ParseTransaction(bm.payload, &tx)
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_, _ = tx.ToTx()
+			}
+		})
 	}
 }

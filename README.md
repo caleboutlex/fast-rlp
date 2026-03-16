@@ -13,30 +13,31 @@ More allocations = more Garbage Collection (GC) pressure = latency spikes during
 
 ## The Proof (Benchmarks)
 
-*Note: Benchmarks decoding a standard EIP-1559 transaction payload. `ParseTransaction` represents the raw, zero-allocation path.*
+*Note: Benchmarks comparing standard `go-ethereum/rlp` decoding vs `fast-rlp` zero-allocation `ParseTransaction` path.*
 
-| Decoder | ns/op | allocs/op | B/op |
-| :--- | :--- | :--- | :--- |
-| `go-ethereum/rlp` | `856.8 ns` | `19` | `512 B` |
-| `fast-rlp (Decode)` | `463.8 ns` | `24` | `936 B` |
-| `fast-rlp (Parse)` | **`43.9 ns`** | **`0`** | **`0 B`** |
+| Scenario | Decoder | ns/op | allocs/op | B/op |
+| :--- | :--- | :--- | :--- | :--- |
+| **EIP-1559** | `go-ethereum/rlp` | `843.0 ns` | `19` | `512 B` |
+| **EIP-1559** | `fast-rlp (Parse)` | **`53.5 ns`** | **`0`** | **`0 B`** |
+| **Legacy** | `go-ethereum/rlp` | `598.6 ns` | `14` | `360 B` |
+| **Legacy** | `fast-rlp (Parse)` | **`34.7 ns`** | **`0`** | **`0 B`** |
+| **AccessList** | `go-ethereum/rlp` | `1097.0 ns` | `22` | `856 B` |
+| **AccessList** | `fast-rlp (Parse)` | **`55.3 ns`** | **`0`** | **`0 B`** |
 
-**Performance Gain:** ~95% reduction in latency when using `ParseTransaction`.
-**Zero-Allocation:** `ParseTransaction` allows for high-speed filtering without any heap overhead.
-
-The current implementation achieves a significant speedup by replacing reflection with direct byte parsing. 
+**Performance Gain:** ~92-95% reduction in latency across all transaction types.
+**Zero-Allocation:** The `ParseTransaction` path provides a unified, zero-overhead entry point for all EVM transaction types.
 
 ## Core Architecture
 
 1. **No Reflection:** Strict adherence to explicit pointer passing (`*types.Transaction`). No `interface{}`.
 2. **Zero-Copy Slicing:** Instead of allocating new byte slices or relying on `io.Reader` streams, `fast-rlp` calculates payload offsets directly from the prefix and maps sub-slices of the original memory block.
 3. **Two-Tier Decoding:** 
-    - **`ParseTransaction`**: The "Hot Path". Zero-allocation parsing into a `FastDynamicFeeTx` struct for immediate filtering.
+    - **`ParseTransaction`**: The "Hot Path". Zero-allocation parsing into a unified `Transaction` struct for immediate filtering.
     - **`DecodeTransaction`**: A convenience bridge to standard `go-ethereum` types.
 
-## How FastDynamicFeeTx is Constructed
+## How Transaction is Constructed
 
-The `FastDynamicFeeTx` struct is specifically designed to eliminate heap allocations and pointer chasing:
+The unified `Transaction` struct is specifically designed to eliminate heap allocations and pointer chasing:
 
 *   **Envelope Detection:** Identifies the EIP-2718 transaction type (e.g., `0x02` for EIP-1559).
 *   **Field Slicing:** The decoder uses O(1) slicing to extract field boundaries.
@@ -67,7 +68,7 @@ func main() {
     rawEIP1559Tx := []byte{ /* ... */ } 
     
     // 1. Zero-allocation parse
-    var fastTx fastrlp.FastDynamicFeeTx
+    var fastTx fastrlp.Transaction
     if err := fastrlp.ParseTransaction(rawEIP1559Tx, &fastTx); err != nil {
         return
     }
