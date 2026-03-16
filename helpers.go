@@ -5,6 +5,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/holiman/uint256"
 )
 
 // decodeBytes returns the payload of an RLP-encoded string and the remaining buffer.
@@ -84,12 +85,89 @@ func decodeList(b []byte) (payload, remainder []byte, err error) {
 	}
 }
 
-// Helper to populate a pre-allocated big.Int.
-
-func setBigInt(b []byte, bi *big.Int) {
-	if len(b) > 0 {
-		bi.SetBytes(b)
+// decodeAccessList manually parses the RLP list of access tuples without reflection.
+func decodeAccessList(b []byte, dest *types.AccessList) error {
+	if len(b) == 0 {
+		*dest = nil
+		return nil
 	}
+
+	// Pre-scan to count tuples to avoid multiple append allocations
+	count := 0
+	temp := b
+	for len(temp) > 0 {
+		_, remainder, err := rlpSplit(temp)
+		if err != nil {
+			return err
+		}
+		count++
+		temp = remainder
+	}
+
+	al := make(types.AccessList, 0, count)
+	for len(b) > 0 {
+		var tupleRLP, storageRLP, addrBytes, hashBytes []byte
+		var err error
+
+		// Each element is a list: [address, [storageKeys...]]
+		if tupleRLP, b, err = decodeList(b); err != nil {
+			return err
+		}
+		if addrBytes, tupleRLP, err = decodeBytes(tupleRLP); err != nil {
+			return err
+		}
+		if storageRLP, tupleRLP, err = decodeList(tupleRLP); err != nil {
+			return err
+		}
+
+		tuple := types.AccessTuple{
+			Address: common.BytesToAddress(addrBytes),
+		}
+
+		// Parse the storage keys list
+		for len(storageRLP) > 0 {
+			if hashBytes, storageRLP, err = decodeBytes(storageRLP); err != nil {
+				return err
+			}
+			tuple.StorageKeys = append(tuple.StorageKeys, common.BytesToHash(hashBytes))
+		}
+		al = append(al, tuple)
+	}
+	*dest = al
+	return nil
+}
+
+// rlpSplit is a zero-allocation helper to get the head and tail of an RLP stream.
+func rlpSplit(b []byte) (item, remainder []byte, err error) {
+	if len(b) == 0 {
+		return nil, nil, ErrInvalidRLP
+	}
+	prefix := b[0]
+	var offset, contentLen uint64
+	if prefix <= 0x7f {
+		return b[:1], b[1:], nil
+	} else if prefix <= 0xb7 {
+		offset, contentLen = 1, uint64(prefix-0x80)
+	} else if prefix <= 0xbf {
+		l := uint64(prefix - 0xb7)
+		offset = 1 + l
+		for i := uint64(1); i < offset; i++ {
+			contentLen = (contentLen << 8) | uint64(b[i])
+		}
+	} else if prefix <= 0xf7 {
+		offset, contentLen = 1, uint64(prefix-0xc0)
+	} else {
+		l := uint64(prefix - 0xf7)
+		offset = 1 + l
+		for i := uint64(1); i < offset; i++ {
+			contentLen = (contentLen << 8) | uint64(b[i])
+		}
+	}
+	total := offset + contentLen
+	if uint64(len(b)) < total {
+		return nil, nil, ErrInvalidRLP
+	}
+	return b[:total], b[total:], nil
 }
 
 func bytesToUint64(b []byte) (uint64, error) {
@@ -103,40 +181,12 @@ func bytesToUint64(b []byte) (uint64, error) {
 	return v, nil
 }
 
-// decodeAccessList manually parses the RLP list of access tuples without reflection.
-func decodeAccessList(b []byte) (types.AccessList, error) {
-	if len(b) == 0 {
-		return nil, nil
+// setBigInt logic: reuse big.Int headers and optimize for small values.
+func setBigInt(src *uint256.Int, dest *big.Int, buf []byte) {
+	if src.IsUint64() {
+		dest.SetUint64(src.Uint64())
+	} else {
+		src.WriteToSlice(buf)
+		dest.SetBytes(buf)
 	}
-
-	var al types.AccessList
-	for len(b) > 0 {
-		var tupleRLP, storageRLP, addrBytes, hashBytes []byte
-		var err error
-
-		// Each element is a list: [address, [storageKeys...]]
-		if tupleRLP, b, err = decodeList(b); err != nil {
-			return nil, err
-		}
-		if addrBytes, tupleRLP, err = decodeBytes(tupleRLP); err != nil {
-			return nil, err
-		}
-		if storageRLP, tupleRLP, err = decodeList(tupleRLP); err != nil {
-			return nil, err
-		}
-
-		tuple := types.AccessTuple{
-			Address: common.BytesToAddress(addrBytes),
-		}
-
-		// Parse the storage keys list
-		for len(storageRLP) > 0 {
-			if hashBytes, storageRLP, err = decodeBytes(storageRLP); err != nil {
-				return nil, err
-			}
-			tuple.StorageKeys = append(tuple.StorageKeys, common.BytesToHash(hashBytes))
-		}
-		al = append(al, tuple)
-	}
-	return al, nil
 }

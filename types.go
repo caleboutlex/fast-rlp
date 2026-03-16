@@ -5,6 +5,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto/kzg4844"
 	"github.com/holiman/uint256"
 )
 
@@ -18,7 +19,7 @@ type DynamicFeeTx struct {
 	To         *common.Address `rlp:"nil"` // nil means contract creation
 	Value      *big.Int
 	Data       []byte
-	AccessList types.AccessList
+	AccessList AccessList
 
 	// Signature values
 	V *big.Int
@@ -26,7 +27,102 @@ type DynamicFeeTx struct {
 	S *big.Int
 }
 
-// RawDynamicFeeTx holds the raw RLP data for each field of an EIP-1559 transaction.
+// LegacyTx is the transaction data of the original Ethereum transactions.
+type LegacyTx struct {
+	Nonce    uint64          // nonce of sender account
+	GasPrice *big.Int        // wei per gas
+	Gas      uint64          // gas limit
+	To       *common.Address `rlp:"nil"` // nil means contract creation
+	Value    *big.Int        // wei amount
+	Data     []byte          // contract invocation input data
+	V, R, S  *big.Int        // signature values
+}
+
+// AccessListTx is the data of EIP-2930 access list transactions.
+type AccessListTx struct {
+	ChainID    *big.Int        // destination chain ID
+	Nonce      uint64          // nonce of sender account
+	GasPrice   *big.Int        // wei per gas
+	Gas        uint64          // gas limit
+	To         *common.Address `rlp:"nil"` // nil means contract creation
+	Value      *big.Int        // wei amount
+	Data       []byte          // contract invocation input data
+	AccessList AccessList      // EIP-2930 access list
+	V, R, S    *big.Int        // signature values
+}
+
+// AccessList is an EIP-2930 access list.
+type AccessList []AccessTuple
+
+// AccessTuple is the element type of an access list.
+type AccessTuple struct {
+	Address     common.Address `json:"address"     gencodec:"required"`
+	StorageKeys []common.Hash  `json:"storageKeys" gencodec:"required"`
+}
+
+// BlobTx represents an EIP-4844 transaction.
+type BlobTx struct {
+	ChainID    *uint256.Int
+	Nonce      uint64
+	GasTipCap  *uint256.Int // a.k.a. maxPriorityFeePerGas
+	GasFeeCap  *uint256.Int // a.k.a. maxFeePerGas
+	Gas        uint64
+	To         common.Address
+	Value      *uint256.Int
+	Data       []byte
+	AccessList AccessList
+	BlobFeeCap *uint256.Int // a.k.a. maxFeePerBlobGas
+	BlobHashes []common.Hash
+
+	// A blob transaction can optionally contain blobs. This field must be set when BlobTx
+	// is used to create a transaction for signing.
+	Sidecar *BlobTxSidecar `rlp:"-"`
+
+	// Signature values
+	V *uint256.Int
+	R *uint256.Int
+	S *uint256.Int
+}
+
+// BlobTxSidecar contains the blobs of a blob transaction.
+type BlobTxSidecar struct {
+	Version     byte                 // Version
+	Blobs       []kzg4844.Blob       // Blobs needed by the blob pool
+	Commitments []kzg4844.Commitment // Commitments needed by the blob pool
+	Proofs      []kzg4844.Proof      // Proofs needed by the blob pool
+}
+
+// SetCodeTx implements the EIP-7702 transaction type which temporarily installs
+// the code at the signer's address.
+type SetCodeTx struct {
+	ChainID    *uint256.Int
+	Nonce      uint64
+	GasTipCap  *uint256.Int // a.k.a. maxPriorityFeePerGas
+	GasFeeCap  *uint256.Int // a.k.a. maxFeePerGas
+	Gas        uint64
+	To         common.Address
+	Value      *uint256.Int
+	Data       []byte
+	AccessList AccessList
+	AuthList   []SetCodeAuthorization
+
+	// Signature values
+	V *uint256.Int
+	R *uint256.Int
+	S *uint256.Int
+}
+
+// SetCodeAuthorization is an authorization from an account to deploy code at its address.
+type SetCodeAuthorization struct {
+	ChainID uint256.Int    `json:"chainId" gencodec:"required"`
+	Address common.Address `json:"address" gencodec:"required"`
+	Nonce   uint64         `json:"nonce" gencodec:"required"`
+	V       uint8          `json:"yParity" gencodec:"required"`
+	R       uint256.Int    `json:"r" gencodec:"required"`
+	S       uint256.Int    `json:"s" gencodec:"required"`
+}
+
+// FastDynamicFeeTx holds the raw RLP data for each field of an EIP-1559 transaction.
 // This struct is designed for zero-allocation decoding. All fields are slices
 // of the original RLP payload.
 type FastDynamicFeeTx struct {
@@ -44,8 +140,7 @@ type FastDynamicFeeTx struct {
 }
 
 // eip1559Data groups all the heap-allocated fields of a DynamicFeeTx into
-// a single memory block. This reduces the number of heap allocations from
-// ~9 down to 1.
+// a single memory block.
 type eip1559Data struct {
 	tx        types.DynamicFeeTx
 	chainID   big.Int
@@ -56,39 +151,20 @@ type eip1559Data struct {
 	to        common.Address
 }
 
-// ToGethTransaction converts the zero-allocation Fast1559Tx into a standard
+// ToTx() converts the zero-allocation FastDynamicFeeTx into a standard
 // go-ethereum types.Transaction. This function will allocate memory for the
 // geth transaction struct and its fields.
-func (f *FastDynamicFeeTx) ToGethTransaction() (*types.Transaction, error) {
+func (f *FastDynamicFeeTx) ToTx() (*types.Transaction, error) {
 	d := new(eip1559Data)
 	innerTx := &d.tx
-
 	var buf [32]byte
 
-	// Optimization: Use SetUint64 for small values to reduce processing overhead
-	if f.ChainID.IsUint64() {
-		d.chainID.SetUint64(f.ChainID.Uint64())
-	} else {
-		f.ChainID.WriteToSlice(buf[:])
-		d.chainID.SetBytes(buf[:])
-	}
+	setBigInt(&f.ChainID, &d.chainID, buf[:])
 	innerTx.ChainID = &d.chainID
 	innerTx.Nonce = f.Nonce
-
-	if f.GasTipCap.IsUint64() {
-		d.gasTipCap.SetUint64(f.GasTipCap.Uint64())
-	} else {
-		f.GasTipCap.WriteToSlice(buf[:])
-		d.gasTipCap.SetBytes(buf[:])
-	}
+	setBigInt(&f.GasTipCap, &d.gasTipCap, buf[:])
 	innerTx.GasTipCap = &d.gasTipCap
-
-	if f.GasFeeCap.IsUint64() {
-		d.gasFeeCap.SetUint64(f.GasFeeCap.Uint64())
-	} else {
-		f.GasFeeCap.WriteToSlice(buf[:])
-		d.gasFeeCap.SetBytes(buf[:])
-	}
+	setBigInt(&f.GasFeeCap, &d.gasFeeCap, buf[:])
 	innerTx.GasFeeCap = &d.gasFeeCap
 	innerTx.Gas = f.Gas
 
@@ -97,31 +173,21 @@ func (f *FastDynamicFeeTx) ToGethTransaction() (*types.Transaction, error) {
 		innerTx.To = &d.to
 	}
 
-	if f.Value.IsUint64() {
-		d.value.SetUint64(f.Value.Uint64())
-	} else {
-		f.Value.WriteToSlice(buf[:])
-		d.value.SetBytes(buf[:])
-	}
+	setBigInt(&f.Value, &d.value, buf[:])
 	innerTx.Value = &d.value
 	innerTx.Data = f.Data
 
 	// Correctly decode the AccessList
 	var err error
-	if innerTx.AccessList, err = decodeAccessList(f.AccessList); err != nil {
+	if err = decodeAccessList(f.AccessList, &innerTx.AccessList); err != nil {
 		return nil, err
 	}
 
-	f.V.WriteToSlice(buf[:])
-	d.v.SetBytes(buf[:])
+	setBigInt(&f.V, &d.v, buf[:])
 	innerTx.V = &d.v
-
-	f.R.WriteToSlice(buf[:])
-	d.r.SetBytes(buf[:])
+	setBigInt(&f.R, &d.r, buf[:])
 	innerTx.R = &d.r
-
-	f.S.WriteToSlice(buf[:])
-	d.s.SetBytes(buf[:])
+	setBigInt(&f.S, &d.s, buf[:])
 	innerTx.S = &d.s
 
 	return types.NewTx(innerTx), nil

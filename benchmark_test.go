@@ -72,7 +72,7 @@ func BenchmarkGethDecodeTransaction(b *testing.B) {
 	}
 }
 
-// BenchmarkFastRLPDecodeTransaction-8      1854018               647.2 ns/op          1336 B/op         25 allocs/op
+// BenchmarkFastRLPDecodeTransaction-8      2587832               463.8 ns/op           936 B/op         24 allocs/op
 func BenchmarkFastRLPDecodeTransaction(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -84,7 +84,7 @@ func BenchmarkFastRLPDecodeTransaction(b *testing.B) {
 	}
 }
 
-// BenchmarkFastRLPParseTransaction-8      35819221                33.59 ns/op            0 B/op          0 allocs/op
+// BenchmarkParseTransaction-8     27278952                43.91 ns/op            0 B/op          0 allocs/op
 func BenchmarkParseTransaction(b *testing.B) {
 	var tx FastDynamicFeeTx
 	b.ReportAllocs()
@@ -96,18 +96,18 @@ func BenchmarkParseTransaction(b *testing.B) {
 	}
 }
 
-// BenchmarkToGethTransaction-8     2256909               506.8 ns/op          1160 B/op         31 allocs/op
-// BenchmarkToGethTransaction-8     1958667               579.8 ns/op          1336 B/op         25 allocs/op
-func BenchmarkToGethTransaction(b *testing.B) {
+// BenchmarkToTx-8          2973628               388.9 ns/op           936 B/op         24 allocs/op
+func BenchmarkToTx(b *testing.B) {
 	var tx FastDynamicFeeTx
-	// Parse the payload to the RawDynamicFeeTransaction type
 	if err := ParseTransaction(eip1559Payload, &tx); err != nil {
 		b.Fatal(err)
 	}
+
 	b.ReportAllocs()
 	b.ResetTimer()
+
 	for i := 0; i < b.N; i++ {
-		if _, err := tx.ToGethTransaction(); err != nil {
+		if _, err := tx.ToTx(); err != nil {
 			b.Fatal(err)
 		}
 	}

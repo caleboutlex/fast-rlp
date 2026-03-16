@@ -4,14 +4,13 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 )
 
-// DecodeTransaction decodes raw RLP bytes into a go-ethereum types.Transaction
-// without triggering reflection-based heap allocations.
+// DecodeTransaction decodes raw RLP bytes into a standard go-ethereum types.Transaction.
 func DecodeTransaction(payload []byte) (*types.Transaction, error) {
 	if len(payload) == 0 {
 		return nil, ErrInvalidRLP
 	}
 
-	// Use a temporary Fast1559Tx to perform the zero-allocation parsing.
+	// Use a temporary FastDynamicFeeTx to perform the zero-allocation parsing.
 	var tx FastDynamicFeeTx
 	if err := ParseTransaction(payload, &tx); err != nil {
 		return nil, err
@@ -19,11 +18,11 @@ func DecodeTransaction(payload []byte) (*types.Transaction, error) {
 
 	// Bridge the zero-alloc struct to the go-ethereum type. This is where
 	// allocations for big.Int, etc., will occur.
-	return tx.ToGethTransaction()
+	return tx.ToTx()
 }
 
 // ParseTransaction performs a zero-allocation decoding of a raw RLP transaction
-// payload into a Fast1559Tx struct. The fields of the resulting struct are
+// payload into a FastDynamicFeeTx struct. The fields of the resulting struct are
 // slices that point directly into the input payload.
 func ParseTransaction(payload []byte, tx *FastDynamicFeeTx) error {
 	if len(payload) == 0 {
@@ -94,7 +93,7 @@ func ParseTransaction(payload []byte, tx *FastDynamicFeeTx) error {
 }
 
 // parseTransactionBody is the zero-allocation core of the decoder. It takes the
-// RLP list payload of a transaction and populates a Fast1559Tx with slices
+// RLP list payload of a transaction and populates a FastDynamicFeeTx with slices
 // pointing to the original payload.
 func parseTransactionBody(fields []byte, tx *FastDynamicFeeTx) (err error) {
 	var b []byte
